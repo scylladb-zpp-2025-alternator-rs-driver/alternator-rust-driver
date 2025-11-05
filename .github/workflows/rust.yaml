@@ -1,0 +1,32 @@
+name: Rust CI/CD
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  format-check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+    - name: Format check
+      run: cargo fmt --all -- --check
+
+  clippy-check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+    - name: Clippy check
+      run: cargo clippy --all-targets --all-features -- -D warnings
+
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+    - name: Run tests
+      run: cargo test --lib --all-features
