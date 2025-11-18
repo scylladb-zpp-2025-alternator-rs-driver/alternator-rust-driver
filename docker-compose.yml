@@ -1,0 +1,49 @@
+networks:
+  default:
+    name: scylla_2_nodes
+services:
+  scylla1:
+    image: scylladb/scylla
+    container_name: scylla1
+    command: |
+      --smp 1
+      --memory 1G
+      --developer-mode 1
+      --overprovisioned 1
+      --alternator-write-isolation always
+      --listen-address scylla1
+      --rpc-address scylla1
+      --alternator-port 8000
+      --seeds scylla1
+    ports:
+      - "9042:9042"
+      - "8000:8000"
+    healthcheck:
+      test: [ "CMD", "cqlsh", "scylla1", "-e", "select * from system.local WHERE key='local'" ]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+  scylla2:
+    image: scylladb/scylla
+    container_name: scylla2
+    command: |
+      --smp 1
+      --memory 1G
+      --developer-mode 1
+      --overprovisioned 1
+      --alternator-write-isolation always
+      --listen-address scylla2
+      --rpc-address scylla2
+      --alternator-port 8000
+      --seeds scylla1
+    ports:
+      - "9043:9042"
+      - "8001:8000"
+    depends_on:
+      scylla1:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "cqlsh", "scylla2", "-e", "select * from system.local WHERE key='local'" ]
+      interval: 5s
+      timeout: 5s
+      retries: 60
