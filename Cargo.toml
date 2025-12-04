@@ -4,15 +4,21 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aws-sdk-dynamodb = { version = "1.100.0", features = ["test-util"] }
 anyhow = "1.0.102"
-aws-sdk-dynamodb = "1.97.0"
 itertools = "0.14.0"
 reqwest = { version = "0.11", features = ["json"] }
 
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1.22.0", features = ["v4"] }
+hyper = { version = "1.8", features = ["client", "server", "http1"] }
+http = "1.0"
+http-body-util = "0.1"
+hyper-util = "0.1"
+futures = "0.3.31"
+test-context = "0.5.5"
 
 
 [lints.rust]
