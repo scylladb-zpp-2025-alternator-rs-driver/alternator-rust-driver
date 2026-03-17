@@ -26,6 +26,10 @@ clippy:
 test: up
 	cargo test
 
+.PHONY: ccm-wrapper-tests
+ccm-wrapper-tests:
+	RUSTFLAGS="--cfg ccm_tests" cargo test --test ccm_wrapper_tests -- --nocapture
+
 .PHONY: up
 up:
 	$(COMPOSE) up -d --wait

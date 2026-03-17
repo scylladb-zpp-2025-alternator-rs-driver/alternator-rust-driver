@@ -23,5 +23,9 @@ jobs:
     timeout-minutes: 60
     steps:
     - uses: actions/checkout@v5
+    - name: Install scylla-ccm
+      run: pip3 install https://github.com/scylladb/scylla-ccm/archive/master.zip
+    - name: CCM wrapper tests
+      run: make ccm-wrapper-tests
     - name: Tests
       run: make test
