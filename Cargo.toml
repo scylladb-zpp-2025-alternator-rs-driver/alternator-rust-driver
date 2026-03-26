@@ -4,13 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-aws-sdk-dynamodb = { version = "1.100.0", features = ["test-util"] }
+aws-sdk-dynamodb = { version = "1.110.0", features = ["test-util"] }
 anyhow = "1.0.102"
 itertools = "0.14.0"
 reqwest = { version = "0.11", features = ["json"] }
 
 
 [dev-dependencies]
+aws-smithy-runtime-api = "1.11.6"
+aws-smithy-runtime = "1.10.3"
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1.22.0", features = ["v4"] }
 hyper = { version = "1.8", features = ["client", "server", "http1"] }
