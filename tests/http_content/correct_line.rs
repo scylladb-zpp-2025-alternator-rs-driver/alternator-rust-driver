@@ -1,6 +1,7 @@
 //! Correct Request Line Test
 //! This test asserts driver generates only requests with correct line: Method = POST, URI = "/".
 //! We use a proxy to intercept messages sent between driver and alternator.
+use crate::http_content::driver_utils::*;
 use crate::http_content::http_test::*;
 use crate::http_content::proxy::*;
 
@@ -59,32 +60,7 @@ impl HttpTestConfig for Config {
         );
 
         for resource in resources {
-            // try to delete
-            let mut result = client.delete_table().table_name(&resource).send().await;
-
-            // wait if resource is not yet ready
-            if let Err(ref e) = result
-                && e.as_service_error()
-                    .is_some_and(|s| s.is_resource_in_use_exception())
-            {
-                client
-                    .wait_until_table_exists()
-                    .table_name(&resource)
-                    .wait(Duration::from_secs(5))
-                    .await
-                    .unwrap();
-
-                result = client.delete_table().table_name(&resource).send().await;
-            }
-
-            // final check
-            if let Err(e) = result
-                && !e
-                    .as_service_error()
-                    .is_some_and(|s| s.is_resource_not_found_exception())
-            {
-                panic!("Cleanup failed: {e:?}");
-            }
+            delete_table_cleanup(&client, &resource).await;
         }
     }
 }
