@@ -1,3 +1,4 @@
+pub mod alternator_client;
 pub use aws_sdk_dynamodb::*;
 
 #[cfg(test)]
