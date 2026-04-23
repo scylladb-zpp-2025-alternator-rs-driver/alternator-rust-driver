@@ -1,7 +1,7 @@
-use alternator_driver::client::Waiters;
+use aws_sdk_dynamodb::client::Waiters;
 use std::time::Duration;
 
-pub async fn delete_table_cleanup(client: &alternator_driver::Client, table_name: &str) {
+pub async fn delete_table_cleanup(client: &aws_sdk_dynamodb::Client, table_name: &str) {
     // try to delete
     let mut result = client.delete_table().table_name(table_name).send().await;
 

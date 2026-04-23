@@ -2,7 +2,7 @@
 //! In this module we assert that the driver strips headers from requests when those headers are not used by alternator.
 //! We use a proxy to intercept messages sent between driver and alternator.
 //!
-//! There are 3 test cases:
+//! There are 5 test cases:
 //! 1. Without Credentials:
 //!    Disable use of credentials, then check if all requests follow specific header whitelist:
 //!    ["host", "x-amz-target", "content-length", "accept-encoding", "content-encoding"]
@@ -15,7 +15,23 @@
 //!    Enable use of credentials, disable header stripping,
 //!    then check if unnecessary headers are used at all (therefore we in fact, need to strip them)
 //!
-//! All 3 use the same set of driver calls, and share the same cleanup function.
+//! 4. Enabled by Per Request Customization:
+//!    Disable header stripping in the config,
+//!    then customize a call to override it,
+//!    then make another non-customized call to assert the override doesn't last.
+//!
+//!    We use the same whitelist as in With Credentials test.
+//!     
+//! 5. Disabled by Per Request Customization:
+//!    Enable header stripping in the config,
+//!    then customize a call to override it,
+//!    then make another non-customized call to assert the override doesn't last.
+//!
+//!    We use the same whitelist as in With Credentials test.
+//!
+//! All share the same cleanup function, first 3 use the same set of driver calls,
+//! the last 2 also use the same set of driver calls.
+//!
 use crate::http_content::driver_utils::*;
 use crate::http_content::http_test::*;
 use crate::http_content::proxy::*;
@@ -31,21 +47,32 @@ use test_context::test_context;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use alternator_driver::client::Waiters;
-use alternator_driver::config::auth::{Params, ResolveAuthScheme};
-use alternator_driver::config::{ConfigBag, RuntimeComponents};
-use alternator_driver::types::{
+use aws_sdk_dynamodb::client::Waiters;
+use aws_sdk_dynamodb::types::{
     AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
     ScalarAttributeType,
 };
 
-use aws_smithy_runtime::client::auth::no_auth::{NO_AUTH_SCHEME_ID, NoAuthScheme};
-use aws_smithy_runtime_api::client::auth::{AuthSchemeOption, AuthSchemeOptionsFuture};
+use alternator_driver::*;
 
-async fn make_calls(
-    client: &alternator_driver::Client,
-    ctx: &mut HttpTestContext<impl HttpTestConfig>,
-) {
+async fn cleanup_calls(resources: Vec<String>, alternator_address: &str) {
+    let client = aws_sdk_dynamodb::Client::from_conf(
+        aws_sdk_dynamodb::Config::builder()
+            .endpoint_url(format!("http://{}", alternator_address))
+            .region(aws_sdk_dynamodb::config::Region::new("eu-central-1"))
+            .behavior_version(aws_sdk_dynamodb::config::BehaviorVersion::latest())
+            .credentials_provider(
+                aws_sdk_dynamodb::config::Credentials::for_tests_with_session_token(),
+            )
+            .build(),
+    );
+
+    for resource in resources {
+        delete_table_cleanup(&client, &resource).await;
+    }
+}
+
+async fn make_calls(client: &AlternatorClient, ctx: &mut HttpTestContext<impl HttpTestConfig>) {
     // perform driver calls, register any tables to cleanup later
     let table_name = format!("table_{}", Uuid::new_v4());
     ctx.register_resource(table_name.clone());
@@ -127,36 +154,6 @@ async fn make_calls(
         .unwrap();
 }
 
-async fn cleanup_calls(resources: Vec<String>, alternator_address: &str) {
-    let client = alternator_driver::Client::from_conf(
-        alternator_driver::Config::builder()
-            .endpoint_url(format!("http://{}", alternator_address))
-            .credentials_provider(
-                alternator_driver::config::Credentials::for_tests_with_session_token(),
-            )
-            .region(alternator_driver::config::Region::new("eu-central-1"))
-            .behavior_version(alternator_driver::config::BehaviorVersion::latest())
-            .build(),
-    );
-
-    for resource in resources {
-        delete_table_cleanup(&client, &resource).await;
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct NoAuthSchemeResolver;
-impl ResolveAuthScheme for NoAuthSchemeResolver {
-    fn resolve_auth_scheme<'a>(
-        &'a self,
-        _: &'a Params,
-        _: &'a ConfigBag,
-        _: &'a RuntimeComponents,
-    ) -> AuthSchemeOptionsFuture<'a> {
-        AuthSchemeOptionsFuture::ready(Ok(vec![AuthSchemeOption::from(NO_AUTH_SCHEME_ID)]))
-    }
-}
-
 struct WithoutCredentialsConfig;
 impl HttpTestConfig for WithoutCredentialsConfig {
     async fn on_request(
@@ -196,18 +193,16 @@ impl HttpTestConfig for WithoutCredentialsConfig {
     }
 }
 
-#[ignore]
 #[test_context(HttpTestContext<WithoutCredentialsConfig>)]
 #[tokio::test]
 pub async fn test_without_credentials(ctx: &mut HttpTestContext<WithoutCredentialsConfig>) {
     // construct client with credentials disabled
-    let client = alternator_driver::Client::from_conf(
-        alternator_driver::Config::builder()
+    let client = AlternatorClient::from_conf(
+        AlternatorConfig::builder()
             .endpoint_url(format!("http://{}", ctx.get_proxy_address()))
-            .auth_scheme_resolver(NoAuthSchemeResolver)
-            .push_auth_scheme(NoAuthScheme::new())
-            .region(alternator_driver::config::Region::new("eu-central-1"))
-            .behavior_version(alternator_driver::config::BehaviorVersion::latest())
+            .behavior_version(aws_sdk_dynamodb::config::BehaviorVersion::latest())
+            .enforce_header_whitelist(true)
+            .allow_no_auth()
             .build(),
     );
 
@@ -257,19 +252,18 @@ impl HttpTestConfig for WithCredentialsConfig {
     }
 }
 
-#[ignore]
 #[test_context(HttpTestContext<WithCredentialsConfig>)]
 #[tokio::test]
 pub async fn test_with_credentials(ctx: &mut HttpTestContext<WithCredentialsConfig>) {
     // construct client with credentials enabled
-    let client = alternator_driver::Client::from_conf(
-        alternator_driver::Config::builder()
+    let client = AlternatorClient::from_conf(
+        AlternatorConfig::builder()
             .endpoint_url(format!("http://{}", ctx.get_proxy_address()))
+            .behavior_version(aws_sdk_dynamodb::config::BehaviorVersion::latest())
+            .enforce_header_whitelist(true)
             .credentials_provider(
-                alternator_driver::config::Credentials::for_tests_with_session_token(),
+                aws_sdk_dynamodb::config::Credentials::for_tests_with_session_token(),
             )
-            .region(alternator_driver::config::Region::new("eu-central-1"))
-            .behavior_version(alternator_driver::config::BehaviorVersion::latest())
             .build(),
     );
 
@@ -322,18 +316,161 @@ impl HttpTestConfig for WhitelistNeededConfig {
 #[tokio::test]
 pub async fn test_whitelist_needed(ctx: &mut HttpTestContext<WhitelistNeededConfig>) {
     // construct client with header stripping disabled
-    let client = alternator_driver::Client::from_conf(
-        alternator_driver::Config::builder()
+    let client = AlternatorClient::from_conf(
+        AlternatorConfig::builder()
             .endpoint_url(format!("http://{}", ctx.get_proxy_address()))
+            .behavior_version(aws_sdk_dynamodb::config::BehaviorVersion::latest())
+            .enforce_header_whitelist(false)
             .credentials_provider(
-                alternator_driver::config::Credentials::for_tests_with_session_token(),
+                aws_sdk_dynamodb::config::Credentials::for_tests_with_session_token(),
             )
-            .region(alternator_driver::config::Region::new("eu-central-1"))
-            .behavior_version(alternator_driver::config::BehaviorVersion::latest())
             .build(),
     );
 
     // perform calls to alternator, use proxy to peek and forward requests
     // proxy ensures that requests use headers not in whitelist by default (without header stripping enabled)
     make_calls(&client, ctx).await;
+}
+
+struct PerRequestCustomizationConfig;
+impl HttpTestConfig for PerRequestCustomizationConfig {
+    async fn cleanup(resources: Vec<String>, alternator_address: &str) {
+        cleanup_calls(resources, alternator_address).await;
+    }
+}
+
+async fn make_customized_calls(
+    client: &AlternatorClient,
+    ctx: &mut HttpTestContext<PerRequestCustomizationConfig>,
+) {
+    let client_strips_headers = client
+        .config()
+        .enforce_header_whitelist()
+        .expect("Enforce header whitelist not set while constructing client");
+
+    // in the first call we assert that we can customize an operation to override client's config
+    // proxy ensures that a whitelist is used (WithCredentialsConfig) or it isn't (WhitelistNeededConfig)
+    // depending on client's value
+    if client_strips_headers {
+        ctx.set_on_request(WhitelistNeededConfig::on_request).await;
+    } else {
+        ctx.set_on_request(WithCredentialsConfig::on_request).await;
+    }
+
+    let table_name = format!("table_{}", Uuid::new_v4());
+    ctx.register_resource(table_name.clone());
+
+    client
+        .create_table()
+        .table_name(&table_name)
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("ExampleKey")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .key_schema(
+            KeySchemaElement::builder()
+                .attribute_name("ExampleKey")
+                .key_type(KeyType::Hash)
+                .build()
+                .unwrap(),
+        )
+        .billing_mode(BillingMode::PayPerRequest)
+        .customize()
+        .alternator_config_override(
+            AlternatorConfig::builder().enforce_header_whitelist(!client_strips_headers),
+        )
+        .send()
+        .await
+        .unwrap();
+
+    // in the second call, we assert that previous customization doesn't last
+    if client_strips_headers {
+        ctx.set_on_request(WithCredentialsConfig::on_request).await;
+    } else {
+        ctx.set_on_request(WhitelistNeededConfig::on_request).await;
+    }
+
+    let table_name = format!("table_{}", Uuid::new_v4());
+    ctx.register_resource(table_name.clone());
+
+    client
+        .create_table()
+        .table_name(&table_name)
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("ExampleKey")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .key_schema(
+            KeySchemaElement::builder()
+                .attribute_name("ExampleKey")
+                .key_type(KeyType::Hash)
+                .build()
+                .unwrap(),
+        )
+        .billing_mode(BillingMode::PayPerRequest)
+        .customize()
+        .send()
+        .await
+        .unwrap();
+}
+
+#[test_context(HttpTestContext<PerRequestCustomizationConfig>)]
+#[tokio::test]
+pub async fn test_enabled_by_per_request_customization(
+    ctx: &mut HttpTestContext<PerRequestCustomizationConfig>,
+) {
+    // construct client with header stripping disabled
+    let client = AlternatorClient::from_conf(
+        AlternatorConfig::builder()
+            .endpoint_url(format!("http://{}", ctx.get_proxy_address()))
+            .behavior_version(aws_sdk_dynamodb::config::BehaviorVersion::latest())
+            .credentials_provider(
+                aws_sdk_dynamodb::config::Credentials::for_tests_with_session_token(),
+            )
+            .enforce_header_whitelist(false)
+            .build(),
+    );
+
+    // perform 2 calls to alternator, use proxy to peek and forward requests
+    //
+    // first call overrides config's enforce_header_whitelist setting,
+    // then proxy checks if it is stripped according to WithCredentialsConfig whitelist
+    //
+    // second call does not override the config
+    // then proxy checks if it has not been stripped
+    // (regular call to assert that customization does not last after operation)
+    make_customized_calls(&client, ctx).await;
+}
+#[test_context(HttpTestContext<PerRequestCustomizationConfig>)]
+#[tokio::test]
+pub async fn test_disabled_by_per_request_customization(
+    ctx: &mut HttpTestContext<PerRequestCustomizationConfig>,
+) {
+    // construct client with header stripping enabled
+    let client = AlternatorClient::from_conf(
+        AlternatorConfig::builder()
+            .endpoint_url(format!("http://{}", ctx.get_proxy_address()))
+            .behavior_version(aws_sdk_dynamodb::config::BehaviorVersion::latest())
+            .credentials_provider(
+                aws_sdk_dynamodb::config::Credentials::for_tests_with_session_token(),
+            )
+            .enforce_header_whitelist(true)
+            .build(),
+    );
+
+    // perform 2 calls to alternator, use proxy to peek and forward requests
+    //
+    // first call overrides config's enforce_header_whitelist setting,
+    // then proxy checks if request has not been stripped
+    //
+    // second call does not override the config
+    // then proxy checks if it is stripped according to WithCredentialsConfig whitelist
+    // (regular call to assert that customization does not last after operation)
+    make_customized_calls(&client, ctx).await;
 }
