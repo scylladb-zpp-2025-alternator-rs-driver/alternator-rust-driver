@@ -1,7 +1,6 @@
 //! Correct Request Line Test
 //! This test asserts driver generates only requests with correct line: Method = POST, URI = "/".
 //! We use a proxy to intercept messages sent between driver and alternator.
-use crate::http_content::driver_utils::*;
 use crate::http_content::http_test::*;
 use crate::http_content::proxy::*;
 
@@ -16,11 +15,13 @@ use test_context::test_context;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use alternator_driver::client::Waiters;
-use alternator_driver::types::{
+use aws_sdk_dynamodb::client::Waiters;
+use aws_sdk_dynamodb::types::{
     AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
     ScalarAttributeType,
 };
+
+use alternator_driver::*;
 
 struct Config;
 impl HttpTestConfig for Config {
@@ -48,19 +49,44 @@ impl HttpTestConfig for Config {
     }
 
     async fn cleanup(resources: Vec<String>, alternator_address: &str) {
-        let client = alternator_driver::Client::from_conf(
-            alternator_driver::Config::builder()
+        let client = aws_sdk_dynamodb::Client::from_conf(
+            aws_sdk_dynamodb::Config::builder()
                 .endpoint_url(format!("http://{}", alternator_address))
+                .behavior_version(aws_sdk_dynamodb::config::BehaviorVersion::latest())
+                .region(aws_sdk_dynamodb::config::Region::new("eu-central-1"))
                 .credentials_provider(
-                    alternator_driver::config::Credentials::for_tests_with_session_token(),
+                    aws_sdk_dynamodb::config::Credentials::for_tests_with_session_token(),
                 )
-                .region(alternator_driver::config::Region::new("eu-central-1"))
-                .behavior_version(alternator_driver::config::BehaviorVersion::latest())
                 .build(),
         );
 
         for resource in resources {
-            delete_table_cleanup(&client, &resource).await;
+            // try to delete
+            let mut result = client.delete_table().table_name(&resource).send().await;
+
+            // wait if resource is not yet ready
+            if let Err(ref e) = result
+                && e.as_service_error()
+                    .is_some_and(|s| s.is_resource_in_use_exception())
+            {
+                client
+                    .wait_until_table_exists()
+                    .table_name(&resource)
+                    .wait(Duration::from_secs(5))
+                    .await
+                    .unwrap();
+
+                result = client.delete_table().table_name(&resource).send().await;
+            }
+
+            // final check
+            if let Err(e) = result
+                && !e
+                    .as_service_error()
+                    .is_some_and(|s| s.is_resource_not_found_exception())
+            {
+                panic!("Cleanup failed: {e:?}");
+            }
         }
     }
 }
@@ -69,14 +95,13 @@ impl HttpTestConfig for Config {
 #[tokio::test]
 pub async fn test(ctx: &mut HttpTestContext<ContextConfig>) {
     // create client
-    let client = alternator_driver::Client::from_conf(
-        alternator_driver::Config::builder()
+    let client = AlternatorClient::from_conf(
+        AlternatorConfig::builder()
             .endpoint_url(format!("http://{}", ctx.get_proxy_address()))
+            .behavior_version(aws_sdk_dynamodb::config::BehaviorVersion::latest())
             .credentials_provider(
-                alternator_driver::config::Credentials::for_tests_with_session_token(),
+                aws_sdk_dynamodb::config::Credentials::for_tests_with_session_token(),
             )
-            .region(alternator_driver::config::Region::new("eu-central-1"))
-            .behavior_version(alternator_driver::config::BehaviorVersion::latest())
             .build(),
     );
 
