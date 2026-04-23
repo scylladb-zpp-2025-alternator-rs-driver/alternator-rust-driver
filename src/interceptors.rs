@@ -13,16 +13,18 @@ use aws_smithy_types::config_bag::{Storable, StoreReplace};
 ///
 /// Is added by [AlternatorClient] to its inner Dynamodb client on construction.
 ///
-/// Uses [strip_headers].
+/// Uses [strip_headers] and [compress_request].
 ///
 /// Also checks [ConfigBag] for config overrides that could have been left by [AlternatorOverrideInterceptor].
 #[derive(Debug)]
 pub(crate) struct AlternatorInterceptor {
+    request_compression: RequestCompression,
     enforce_header_whitelist: bool,
 }
 impl AlternatorInterceptor {
-    pub fn new(enforce_header_whitelist: bool) -> Self {
+    pub fn new(request_compression: RequestCompression, enforce_header_whitelist: bool) -> Self {
         Self {
+            request_compression,
             enforce_header_whitelist,
         }
     }
@@ -30,6 +32,27 @@ impl AlternatorInterceptor {
 impl Intercept for AlternatorInterceptor {
     fn name(&self) -> &'static str {
         "AlternatorInterceptor"
+    }
+
+    fn modify_before_retry_loop(
+        &self,
+        context: &mut BeforeTransmitInterceptorContextMut,
+        _: &RuntimeComponents,
+        cfg: &mut ConfigBag,
+    ) -> Result<(), BoxError> {
+        // check for overrides
+        let request_compression = cfg
+            .interceptor_state()
+            .load::<RequestCompressionStore>()
+            .map(|store| store.request_compression.clone())
+            .unwrap_or(self.request_compression.clone());
+
+        // message must be compressed before signing, but it's more efficient to do it before retry loop
+        if let Some((algorithm, level, threshold)) = request_compression.get() {
+            compress_request(context.request_mut(), algorithm, level, threshold);
+        }
+
+        Ok(())
     }
 
     fn modify_before_transmit(
@@ -52,6 +75,14 @@ impl Intercept for AlternatorInterceptor {
 
         Ok(())
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RequestCompressionStore {
+    request_compression: RequestCompression,
+}
+impl Storable for RequestCompressionStore {
+    type Storer = StoreReplace<Self>;
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +117,15 @@ impl<T: Storable<Storer = StoreReplace<T>> + Clone> Intercept for AlternatorOver
         cfg.interceptor_state().store_put(self.store.clone());
 
         Ok(())
+    }
+}
+impl AlternatorOverrideInterceptor<RequestCompressionStore> {
+    pub(crate) fn for_request_compression(request_compression: RequestCompression) -> Self {
+        AlternatorOverrideInterceptor {
+            store: RequestCompressionStore {
+                request_compression,
+            },
+        }
     }
 }
 impl AlternatorOverrideInterceptor<EnforceHeaderWhitelistStore> {
