@@ -7,5 +7,6 @@ mod http_test;
 #[path = "common/driver_utils.rs"]
 mod driver_utils;
 
+pub mod body_compression;
 pub mod correct_line;
 pub mod header_whitelist;
