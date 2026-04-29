@@ -31,21 +31,15 @@ use test_context::test_context;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use alternator_driver::client::Waiters;
-use alternator_driver::config::auth::{Params, ResolveAuthScheme};
-use alternator_driver::config::{ConfigBag, RuntimeComponents};
-use alternator_driver::types::{
+use aws_sdk_dynamodb::client::Waiters;
+use aws_sdk_dynamodb::types::{
     AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
     ScalarAttributeType,
 };
 
-use aws_smithy_runtime::client::auth::no_auth::{NO_AUTH_SCHEME_ID, NoAuthScheme};
-use aws_smithy_runtime_api::client::auth::{AuthSchemeOption, AuthSchemeOptionsFuture};
+use alternator_driver::*;
 
-async fn make_calls(
-    client: &alternator_driver::Client,
-    ctx: &mut HttpTestContext<impl HttpTestConfig>,
-) {
+async fn make_calls(client: &AlternatorClient, ctx: &mut HttpTestContext<impl HttpTestConfig>) {
     // perform driver calls, register any tables to cleanup later
     let table_name = format!("table_{}", Uuid::new_v4());
     ctx.register_resource(table_name.clone());
@@ -128,32 +122,19 @@ async fn make_calls(
 }
 
 async fn cleanup_calls(resources: Vec<String>, alternator_address: &str) {
-    let client = alternator_driver::Client::from_conf(
-        alternator_driver::Config::builder()
+    let client = aws_sdk_dynamodb::Client::from_conf(
+        aws_sdk_dynamodb::Config::builder()
             .endpoint_url(format!("http://{}", alternator_address))
+            .region(aws_sdk_dynamodb::config::Region::new("eu-central-1"))
+            .behavior_version(aws_sdk_dynamodb::config::BehaviorVersion::latest())
             .credentials_provider(
-                alternator_driver::config::Credentials::for_tests_with_session_token(),
+                aws_sdk_dynamodb::config::Credentials::for_tests_with_session_token(),
             )
-            .region(alternator_driver::config::Region::new("eu-central-1"))
-            .behavior_version(alternator_driver::config::BehaviorVersion::latest())
             .build(),
     );
 
     for resource in resources {
         delete_table_cleanup(&client, &resource).await;
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct NoAuthSchemeResolver;
-impl ResolveAuthScheme for NoAuthSchemeResolver {
-    fn resolve_auth_scheme<'a>(
-        &'a self,
-        _: &'a Params,
-        _: &'a ConfigBag,
-        _: &'a RuntimeComponents,
-    ) -> AuthSchemeOptionsFuture<'a> {
-        AuthSchemeOptionsFuture::ready(Ok(vec![AuthSchemeOption::from(NO_AUTH_SCHEME_ID)]))
     }
 }
 
@@ -201,13 +182,11 @@ impl HttpTestConfig for WithoutCredentialsConfig {
 #[tokio::test]
 pub async fn test_without_credentials(ctx: &mut HttpTestContext<WithoutCredentialsConfig>) {
     // construct client with credentials disabled
-    let client = alternator_driver::Client::from_conf(
-        alternator_driver::Config::builder()
+    let client = AlternatorClient::from_conf(
+        AlternatorConfig::builder()
             .endpoint_url(format!("http://{}", ctx.get_proxy_address()))
-            .auth_scheme_resolver(NoAuthSchemeResolver)
-            .push_auth_scheme(NoAuthScheme::new())
-            .region(alternator_driver::config::Region::new("eu-central-1"))
-            .behavior_version(alternator_driver::config::BehaviorVersion::latest())
+            .behavior_version(aws_sdk_dynamodb::config::BehaviorVersion::latest())
+            .allow_no_auth()
             .build(),
     );
 
@@ -262,14 +241,13 @@ impl HttpTestConfig for WithCredentialsConfig {
 #[tokio::test]
 pub async fn test_with_credentials(ctx: &mut HttpTestContext<WithCredentialsConfig>) {
     // construct client with credentials enabled
-    let client = alternator_driver::Client::from_conf(
-        alternator_driver::Config::builder()
+    let client = AlternatorClient::from_conf(
+        AlternatorConfig::builder()
             .endpoint_url(format!("http://{}", ctx.get_proxy_address()))
+            .behavior_version(aws_sdk_dynamodb::config::BehaviorVersion::latest())
             .credentials_provider(
-                alternator_driver::config::Credentials::for_tests_with_session_token(),
+                aws_sdk_dynamodb::config::Credentials::for_tests_with_session_token(),
             )
-            .region(alternator_driver::config::Region::new("eu-central-1"))
-            .behavior_version(alternator_driver::config::BehaviorVersion::latest())
             .build(),
     );
 
@@ -322,14 +300,13 @@ impl HttpTestConfig for WhitelistNeededConfig {
 #[tokio::test]
 pub async fn test_whitelist_needed(ctx: &mut HttpTestContext<WhitelistNeededConfig>) {
     // construct client with header stripping disabled
-    let client = alternator_driver::Client::from_conf(
-        alternator_driver::Config::builder()
+    let client = AlternatorClient::from_conf(
+        AlternatorConfig::builder()
             .endpoint_url(format!("http://{}", ctx.get_proxy_address()))
+            .behavior_version(aws_sdk_dynamodb::config::BehaviorVersion::latest())
             .credentials_provider(
-                alternator_driver::config::Credentials::for_tests_with_session_token(),
+                aws_sdk_dynamodb::config::Credentials::for_tests_with_session_token(),
             )
-            .region(alternator_driver::config::Region::new("eu-central-1"))
-            .behavior_version(alternator_driver::config::BehaviorVersion::latest())
             .build(),
     );
 
