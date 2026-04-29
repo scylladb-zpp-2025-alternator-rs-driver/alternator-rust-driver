@@ -1,3 +1,5 @@
+use crate::*;
+
 /// Storage for alternator-specific settings chosen by the user for [AlternatorConfig].
 ///
 /// Each field is an Option, as the user may have not chosen a value.
@@ -7,7 +9,9 @@
 /// when the override includes only settings selected by the user.
 /// (see [AlternatorCustomizableOperation])
 #[derive(Clone, Debug, Default)]
-pub(crate) struct AlternatorExtensions {}
+pub(crate) struct AlternatorExtensions {
+    pub(crate) enforce_header_whitelist: Option<bool>,
+}
 
 /// [AlternatorClient]'s config
 ///
@@ -43,6 +47,18 @@ impl AlternatorConfig {
     pub fn new(config: &aws_types::sdk_config::SdkConfig) -> Self {
         AlternatorBuilder::from(config).build()
     }
+
+    /// Before sending each request, strip them from headers that are not used by the Alternator.
+    ///
+    /// This is done by an interceptor in `modify_before_transmit` hook.
+    ///
+    /// Take note, that this may break your own interceptors,
+    /// if they happened to look inside these headers after this happens.
+    ///
+    /// Turned on by default.
+    pub fn enforce_header_whitelist(&self) -> Option<bool> {
+        self.alternator_ext.enforce_header_whitelist
+    }
 }
 
 /// Builder for [AlternatorConfig]
@@ -74,6 +90,32 @@ impl AlternatorBuilder {
             dynamodb_config: self.dynamodb_builder.build(),
             alternator_ext: self.alternator_ext,
         }
+    }
+
+    /// Before sending each request, strip them from headers that are not used by the Alternator.
+    ///
+    /// This is done by an interceptor in `modify_before_transmit` hook.
+    ///
+    /// Take note, that this may break your own interceptors,
+    /// if they happened to look inside these headers after this happens.
+    ///
+    /// Turned on by default.
+    pub fn enforce_header_whitelist(mut self, enforce: bool) -> Self {
+        self.set_enforce_header_whitelist(enforce);
+        self
+    }
+
+    /// Before sending each request, strip them from headers that are not used by the Alternator.
+    ///
+    /// This is done by an interceptor in `modify_before_transmit` hook.
+    ///
+    /// Take note, that this may break your own interceptors,
+    /// if they happened to look inside these headers after this happens.
+    ///
+    /// Turned on by default.
+    pub fn set_enforce_header_whitelist(&mut self, enforce: bool) -> &mut Self {
+        self.alternator_ext.enforce_header_whitelist = Some(enforce);
+        self
     }
 }
 
@@ -560,5 +602,29 @@ impl AlternatorBuilder {
     pub fn behavior_version_latest(mut self) -> Self {
         self.dynamodb_builder = self.dynamodb_builder.behavior_version_latest();
         self
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use itertools::Itertools;
+
+    use super::*;
+    
+    #[test]
+    fn config_does_not_add_hooks() {
+        let config = AlternatorConfig::builder()
+            .enforce_header_whitelist(true)
+            .behavior_version_latest()
+            .build();
+
+        assert!(
+            config
+                .interceptors()
+                .try_len()
+                .expect("does not have length")
+                == 0
+        );
     }
 }
