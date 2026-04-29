@@ -21,10 +21,18 @@ pub struct AlternatorClient {
 impl AlternatorClient {
     pub fn from_conf(config: AlternatorConfig) -> Self {
         let dynamodb_config = config.dynamodb_config.clone();
+        let extensions = config.alternator_ext.clone();
+
+        let enforce_header_whitelist = extensions.enforce_header_whitelist.unwrap_or(true);
 
         let has_region = dynamodb_config.region().is_some();
 
-        let mut dynamodb_config = dynamodb_config.to_builder();
+        let mut dynamodb_config =
+            dynamodb_config
+                .to_builder()
+                .interceptor(AlternatorInterceptor::new(
+                    enforce_header_whitelist,
+                ));
 
         if !has_region {
             dynamodb_config.set_region(Some(aws_sdk_dynamodb::config::Region::from_static(
@@ -421,5 +429,54 @@ impl aws_sdk_dynamodb::client::Waiters for AlternatorClient {
         &self,
     ) -> aws_sdk_dynamodb::waiters::table_not_exists::TableNotExistsFluentBuilder {
         self.dynamodb_client.wait_until_table_not_exists()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    use aws_sdk_dynamodb::config::Intercept;
+    use itertools::Itertools;
+
+    #[test]
+    fn test_client_adds_hooks_to_inner_client() {
+        let client = AlternatorClient::from_conf(
+            AlternatorConfig::builder()
+                .behavior_version_latest()
+                .build(),
+        );
+
+        let inner_config = client.dynamodb_client.config();
+
+        assert!(inner_config.region().is_some());
+
+        assert!(
+            inner_config
+                .interceptors()
+                .filter(|interceptor| interceptor.name() == "AlternatorInterceptor")
+                .exactly_one()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_client_stores_his_config_for_reference_only() {
+        let client = AlternatorClient::from_conf(
+            AlternatorConfig::builder()
+                .enforce_header_whitelist(true)
+                .behavior_version_latest()
+                .build(),
+        );
+
+        let reference_config = client.config();
+
+        assert_eq!(
+            reference_config
+                .interceptors()
+                .try_len()
+                .expect("does not have length"),
+            0
+        )
     }
 }
