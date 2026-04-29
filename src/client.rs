@@ -4,6 +4,9 @@ use crate::*;
 ///
 /// A simple wrapper around [aws_sdk_dynamodb::Client], that adds hooks with alternator-specific optimizations.
 ///
+/// By default, enables gzip request compression, strips requests from headers that are not used by alternator,
+/// and chooses an arbitrary aws region, as alternator doesn't require one.
+///
 /// Can be build using [AlternatorConfig] like so:
 /// ```ignore
 /// let config =
@@ -23,6 +26,7 @@ impl AlternatorClient {
         let dynamodb_config = config.dynamodb_config.clone();
         let extensions = config.alternator_ext.clone();
 
+        let request_compression = extensions.request_compression.unwrap_or_default();
         let enforce_header_whitelist = extensions.enforce_header_whitelist.unwrap_or(true);
 
         let has_region = dynamodb_config.region().is_some();
@@ -31,6 +35,7 @@ impl AlternatorClient {
             dynamodb_config
                 .to_builder()
                 .interceptor(AlternatorInterceptor::new(
+                    request_compression,
                     enforce_header_whitelist,
                 ));
 

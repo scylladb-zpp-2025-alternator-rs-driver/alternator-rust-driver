@@ -10,6 +10,7 @@ use crate::*;
 /// (see [AlternatorCustomizableOperation])
 #[derive(Clone, Debug, Default)]
 pub(crate) struct AlternatorExtensions {
+    pub(crate) request_compression: Option<RequestCompression>,
     pub(crate) enforce_header_whitelist: Option<bool>,
 }
 
@@ -58,6 +59,19 @@ impl AlternatorConfig {
     /// Turned on by default.
     pub fn enforce_header_whitelist(&self) -> Option<bool> {
         self.alternator_ext.enforce_header_whitelist
+    }
+
+    /// Enable / disable request compression.
+    ///
+    /// This must be done before the request is signed,
+    /// and is done by an interceptor in `modify_before_retry_loop` hook.
+    ///
+    /// Take note, that this may break your own interceptors,
+    /// if they happened to look inside the body after this happens.
+    ///
+    /// By default, Gzip compression is used, with 1024 threshold and level 6 of compression.
+    pub fn request_compression(&self) -> Option<RequestCompression> {
+        self.alternator_ext.request_compression.clone()
     }
 }
 
@@ -115,6 +129,37 @@ impl AlternatorBuilder {
     /// Turned on by default.
     pub fn set_enforce_header_whitelist(&mut self, enforce: bool) -> &mut Self {
         self.alternator_ext.enforce_header_whitelist = Some(enforce);
+        self
+    }
+
+    /// Enable / disable request compression.
+    ///
+    /// This must be done before the request is signed,
+    /// and is done by an interceptor in `modify_before_retry_loop` hook.
+    ///
+    /// Take note, that this may break your own interceptors,
+    /// if they happened to look inside the body after this happens.
+    ///
+    /// By default, Gzip compression is used, with 1024 threshold and level 6 of compression.
+    pub fn request_compression(mut self, request_compression: RequestCompression) -> Self {
+        self.set_request_compression(request_compression);
+        self
+    }
+
+    /// Enable / disable request compression.
+    ///
+    /// This must be done before the request is signed,
+    /// and is done by an interceptor in `modify_before_retry_loop` hook.
+    ///
+    /// Take note, that this may break your own interceptors,
+    /// if they happened to look inside the body after this happens.
+    ///
+    /// By default, Gzip compression is used, with 1024 threshold and level 6 of compression.
+    pub fn set_request_compression(
+        &mut self,
+        request_compression: RequestCompression,
+    ) -> &mut Self {
+        self.alternator_ext.request_compression = Some(request_compression);
         self
     }
 }
@@ -611,7 +656,39 @@ mod test {
     use itertools::Itertools;
 
     use super::*;
-    
+
+    #[test]
+    fn config_remembers_builder_and_vice_versa() {
+        let config = AlternatorConfig::builder()
+            .request_compression(RequestCompression::enabled(
+                CompressionAlgorithm::Zlib,
+                CompressionLevel::default(),
+                0,
+            ))
+            .behavior_version_latest()
+            .build();
+
+        assert!(config.enforce_header_whitelist().is_none());
+
+        assert_eq!(
+            config
+                .request_compression()
+                .expect("request compression is not set"),
+            RequestCompression::enabled(CompressionAlgorithm::Zlib, CompressionLevel::default(), 0)
+        );
+
+        let config = config.to_builder().build();
+
+        assert!(config.enforce_header_whitelist().is_none());
+
+        assert_eq!(
+            config
+                .request_compression()
+                .expect("request compression is not set"),
+            RequestCompression::enabled(CompressionAlgorithm::Zlib, CompressionLevel::default(), 0)
+        );
+    }
+
     #[test]
     fn config_does_not_add_hooks() {
         let config = AlternatorConfig::builder()
