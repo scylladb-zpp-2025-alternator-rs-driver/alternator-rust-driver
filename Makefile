@@ -34,7 +34,7 @@ ccm-wrapper-tests:
 up:
 	$(COMPOSE) up -d --wait
 	@echo
-	@echo "A 2-node cluster is running in the background. Use 'make down' to stop it and remove all the volumes."
+	@echo "1 scylla node is running in the background. Use 'make down' to stop it and remove its volume."
 	@echo
 
 .PHONY: down
@@ -47,11 +47,11 @@ logs:
 
 .PHONY: cqlsh
 cqlsh:
-	$(COMPOSE) exec scylla1 cqlsh -u cassandra -p cassandra
+	$(COMPOSE) exec scylla_node cqlsh -u cassandra -p cassandra
 
 .PHONY: shell
 shell:
-	$(COMPOSE) exec scylla1 bash
+	$(COMPOSE) exec scylla_node bash
 
 .PHONY: volumes
 volumes:
