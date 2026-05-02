@@ -12,7 +12,12 @@ use crate::*;
 pub(crate) struct AlternatorExtensions {
     pub(crate) request_compression: Option<RequestCompression>,
     pub(crate) enforce_header_whitelist: Option<bool>,
+    pub(crate) active_interval: Option<u64>,
+    pub(crate) idle_interval: Option<u64>,
     pub(crate) routing_scope: Option<RoutingScope>,
+    pub(crate) scheme: Option<String>,
+    pub(crate) port: Option<u16>,
+    pub(crate) seed_hosts: Option<Vec<String>>,
 }
 
 /// [AlternatorClient]'s config
@@ -75,6 +80,14 @@ impl AlternatorConfig {
         self.alternator_ext.request_compression.clone()
     }
 
+    pub fn active_interval(&self) -> Option<u64> {
+        self.alternator_ext.active_interval
+    }
+
+    pub fn idle_interval(&self) -> Option<u64> {
+        self.alternator_ext.idle_interval
+    }
+
     /// Get the client's routing scope.
     ///
     /// This is used by the client to route requests to a chosen subset of nodes in the cluster,
@@ -94,6 +107,18 @@ impl AlternatorConfig {
     pub fn routing_scope(&self) -> Option<RoutingScope> {
         self.alternator_ext.routing_scope.clone()
     }
+
+    pub fn scheme(&self) -> Option<String> {
+        self.alternator_ext.scheme.clone()
+    }
+
+    pub fn port(&self) -> Option<u16> {
+        self.alternator_ext.port
+    }
+
+    pub fn seed_hosts(&self) -> Option<Vec<String>> {
+        self.alternator_ext.seed_hosts.clone()
+    }
 }
 
 /// Builder for [AlternatorConfig]
@@ -109,7 +134,6 @@ impl AlternatorConfig {
 ///     .build();
 ///
 /// let client = AlternatorClient::from_conf(config);
-/// ```
 #[derive(Clone, Debug, Default)]
 pub struct AlternatorBuilder {
     pub(crate) dynamodb_builder: aws_sdk_dynamodb::config::Builder,
@@ -184,6 +208,26 @@ impl AlternatorBuilder {
         self
     }
 
+    pub fn active_interval(mut self, active_interval: u64) -> Self {
+        self.set_active_interval(active_interval);
+        self
+    }
+
+    pub fn set_active_interval(&mut self, active_interval: u64) -> &mut Self {
+        self.alternator_ext.active_interval = Some(active_interval);
+        self
+    }
+
+    pub fn idle_interval(mut self, idle_interval: u64) -> Self {
+        self.set_idle_interval(idle_interval);
+        self
+    }
+
+    pub fn set_idle_interval(&mut self, idle_interval: u64) -> &mut Self {
+        self.alternator_ext.idle_interval = Some(idle_interval);
+        self
+    }
+
     /// Set the routing scope for the client.
     ///
     /// This is used by the client to route requests to a chosen subset of nodes in the cluster,
@@ -223,6 +267,40 @@ impl AlternatorBuilder {
     /// may be redundant if the set of nodes in the next scope is a subset of the previous one.
     pub fn set_routing_scope(&mut self, routing_scope: RoutingScope) -> &mut Self {
         self.alternator_ext.routing_scope = Some(routing_scope);
+        self
+    }
+
+    pub fn scheme(mut self, scheme: impl Into<String>) -> Self {
+        self.set_scheme(scheme);
+        self
+    }
+
+    pub fn set_scheme(&mut self, scheme: impl Into<String>) -> &mut Self {
+        self.alternator_ext.scheme = Some(scheme.into());
+        self
+    }
+
+    pub fn port(mut self, port: u16) -> Self {
+        self.set_port(port);
+        self
+    }
+
+    pub fn set_port(&mut self, port: u16) -> &mut Self {
+        self.alternator_ext.port = Some(port);
+        self
+    }
+
+    pub fn seed_hosts<I, S>(mut self, seed_hosts: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.set_seed_hosts(seed_hosts.into_iter().map(Into::into).collect());
+        self
+    }
+
+    pub fn set_seed_hosts(&mut self, seed_hosts: Vec<String>) -> &mut Self {
+        self.alternator_ext.seed_hosts = Some(seed_hosts);
         self
     }
 }
@@ -633,15 +711,24 @@ impl AlternatorBuilder {
     }
 
     pub fn endpoint_url(mut self, endpoint_url: impl Into<String>) -> Self {
-        self.dynamodb_builder = self.dynamodb_builder.endpoint_url(endpoint_url);
+        self.set_endpoint_url(Some(endpoint_url.into()));
         self
     }
 
     pub fn set_endpoint_url(&mut self, endpoint_url: Option<String>) -> &mut Self {
+        if let Some(url_str) = endpoint_url.as_deref()
+            && let Ok(url) = url::Url::parse(url_str)
+            && let Some(host) = url.host_str()
+        {
+            self.set_seed_hosts(vec![host.to_string()]);
+            self.set_scheme(format!("{}://", url.scheme()));
+            if let Some(port) = url.port() {
+                self.set_port(port);
+            }
+        }
         self.dynamodb_builder.set_endpoint_url(endpoint_url);
         self
     }
-
     pub fn use_dual_stack(mut self, use_dual_stack: impl Into<bool>) -> Self {
         self.dynamodb_builder = self.dynamodb_builder.use_dual_stack(use_dual_stack);
         self
