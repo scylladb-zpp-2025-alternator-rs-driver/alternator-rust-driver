@@ -8,6 +8,7 @@ use aws_smithy_runtime_api::client::interceptors::context::{
 use aws_smithy_runtime_api::client::runtime_components::RuntimeComponents;
 use aws_smithy_types::config_bag::ConfigBag;
 use aws_smithy_types::config_bag::{Storable, StoreReplace};
+use std::sync::Arc;
 
 /// Driver's main interceptor
 ///
@@ -73,6 +74,13 @@ impl Intercept for AlternatorInterceptor {
             strip_headers(context.request_mut());
         }
 
+        // Take the next node from the query plan and override the request URI.
+        if let Some(query_plan) = cfg.interceptor_state().load::<QueryPlan>()
+            && let Some(next_node) = query_plan.next_node()
+        {
+            let _ = context.request_mut().set_uri(next_node.to_string());
+        }
+
         Ok(())
     }
 }
@@ -135,5 +143,36 @@ impl AlternatorOverrideInterceptor<EnforceHeaderWhitelistStore> {
                 enforce_header_whitelist,
             },
         }
+    }
+}
+
+/// An interceptor that adds a round-robin [QueryPlan] to the config bag before request serialization,
+/// so that [AlternatorInterceptor] can later use it to determine which node to send the request to.
+#[derive(Debug)]
+pub(crate) struct RoundRobinQueryPlanInterceptor {
+    live_nodes: Arc<LiveNodes>,
+}
+
+impl RoundRobinQueryPlanInterceptor {
+    pub fn new(live_nodes: Arc<LiveNodes>) -> Self {
+        Self { live_nodes }
+    }
+}
+
+impl Intercept for RoundRobinQueryPlanInterceptor {
+    fn name(&self) -> &'static str {
+        "RoundRobinQueryPlanInterceptor"
+    }
+
+    fn modify_before_serialization(
+        &self,
+        _: &mut BeforeSerializationInterceptorContextMut,
+        _: &RuntimeComponents,
+        cfg: &mut ConfigBag,
+    ) -> Result<(), BoxError> {
+        let query_plan = QueryPlan::new(self.live_nodes.clone());
+        cfg.interceptor_state().store_put(query_plan);
+
+        Ok(())
     }
 }
