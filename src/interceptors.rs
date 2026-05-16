@@ -2,12 +2,19 @@ use crate::*;
 
 use aws_smithy_runtime_api::box_error::BoxError;
 use aws_smithy_runtime_api::client::interceptors::Intercept;
+use aws_smithy_runtime_api::client::interceptors::context::Input;
 use aws_smithy_runtime_api::client::interceptors::context::{
     BeforeSerializationInterceptorContextMut, BeforeTransmitInterceptorContextMut,
 };
 use aws_smithy_runtime_api::client::runtime_components::RuntimeComponents;
 use aws_smithy_types::config_bag::ConfigBag;
 use aws_smithy_types::config_bag::{Storable, StoreReplace};
+use std::sync::Arc;
+
+use crate::keyrouting::affinity_config::KeyRouteAffinityConfig;
+use crate::keyrouting::classifier;
+use crate::keyrouting::hasher;
+use crate::keyrouting::resolver;
 
 /// Driver's main interceptor
 ///
@@ -75,6 +82,34 @@ impl Intercept for AlternatorInterceptor {
 
         Ok(())
     }
+
+    fn modify_before_signing(
+        &self,
+        context: &mut BeforeTransmitInterceptorContextMut<'_>,
+        _: &RuntimeComponents,
+        cfg: &mut ConfigBag,
+    ) -> Result<(), BoxError> {
+        // Take the next node from the query plan and override the request URI.
+        if let Some(query_plan) = cfg.interceptor_state().load::<QueryPlan>()
+            && let Some(next_node) = query_plan.next_node()
+        {
+            let request = context.request_mut();
+            let mut current = url::Url::parse(request.uri())?;
+            current
+                .set_scheme(next_node.scheme())
+                .map_err(|_| "cannot set scheme")?;
+            current
+                .set_host(next_node.host_str())
+                .map_err(|_| "cannot set host")?;
+            current
+                .set_port(next_node.port())
+                .map_err(|_| "cannot set port")?;
+
+            request.set_uri(current.as_str())?;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -135,5 +170,137 @@ impl AlternatorOverrideInterceptor<EnforceHeaderWhitelistStore> {
                 enforce_header_whitelist,
             },
         }
+    }
+}
+
+/// An interceptor that adds a round-robin [QueryPlan] to the config bag before request serialization,
+/// so that [AlternatorInterceptor] can later use it to determine which node to send the request to.
+#[derive(Debug)]
+pub(crate) struct RoundRobinQueryPlanInterceptor {
+    live_nodes: Arc<LiveNodes>,
+}
+
+impl RoundRobinQueryPlanInterceptor {
+    pub fn new(live_nodes: Arc<LiveNodes>) -> Self {
+        Self { live_nodes }
+    }
+}
+
+impl Intercept for RoundRobinQueryPlanInterceptor {
+    fn name(&self) -> &'static str {
+        "RoundRobinQueryPlanInterceptor"
+    }
+
+    /// This hook is triggered exactly once per request, before the first attempt is serialized.
+    /// Query plan, put here, is then used before every attempt by [`AlternatorInterceptor`] in `modify_before_signing`
+    /// hook to determine which node the request should be sent to.
+    /// This allows for tracking which nodes have already been tried in the current request and implementing a round-robin strategy.
+    fn modify_before_serialization(
+        &self,
+        _: &mut BeforeSerializationInterceptorContextMut,
+        _: &RuntimeComponents,
+        cfg: &mut ConfigBag,
+    ) -> Result<(), BoxError> {
+        let query_plan = QueryPlan::new_basic(self.live_nodes.clone());
+        cfg.interceptor_state().store_put(query_plan);
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct AffinityQueryPlanInterceptor {
+    config: KeyRouteAffinityConfig,
+    live_nodes: Arc<LiveNodes>,
+    resolver: Arc<resolver::PartitionKeyResolver>,
+}
+
+/// An interceptor that builds a partition-key-aware [QueryPlan] for
+/// qualifying requests, or a round-robin [QueryPlan] as a fallback.
+///
+/// On the first attempt of each request, [`modify_before_serialization`]
+/// inspects the operation type, extracts the partition key if one applies,
+/// and constructs a seeded [QueryPlan] so that subsequent retries route to
+/// the same coordinator. Requests that don't qualify (read operations,
+/// `BatchWriteItem`, missing partition key info, unsupported PK types) get
+/// a basic round-robin plan instead.
+///
+/// Partition key names are resolved lazily via [`PartitionKeyResolver`].
+/// On a cache miss, the request falls back to round-robin and discovery
+/// is triggered in the background for next time.
+impl AffinityQueryPlanInterceptor {
+    /// Creates the interceptor and pre-populates the cache with any static
+    /// mappings provided by the user in the AlternatorConfig.
+    pub fn new(
+        config: KeyRouteAffinityConfig,
+        live_nodes: Arc<LiveNodes>,
+        resolver: Arc<resolver::PartitionKeyResolver>,
+    ) -> Self {
+        Self {
+            config,
+            live_nodes,
+            resolver,
+        }
+    }
+
+    /// Tries to build an affinity-routed plan for `input`. Returns `None`
+    /// when affinity doesn't apply (mode disabled, non-qualifying op, no
+    /// table, cache miss, no PK value, unsupported PK type). On cache
+    /// miss this also triggers background PK discovery as a side effect.
+    pub fn try_affinity_plan(&self, input: &Input) -> Option<QueryPlan> {
+        if !self.config.is_enabled() {
+            return None;
+        }
+
+        let op = classifier::DynamoOp::from_input(input)?;
+
+        if !op.should_apply(self.config.affinity_type) {
+            return None;
+        }
+
+        let table_name = op.table_name()?;
+
+        let pk_name = match self.resolver.get_partition_key(table_name) {
+            Some(cached_name) => cached_name,
+            None => {
+                // CACHE MISS: Trigger background discovery.
+                self.resolver.trigger_discovery(table_name);
+
+                // Use round-robin for this request.
+                return None;
+            }
+        };
+
+        // Get the partition key value.
+        let pk_value = op.partition_key(&pk_name)?;
+
+        let hash = hasher::hash_attribute_value(pk_value)?;
+        Some(QueryPlan::new_with_hash(self.live_nodes.clone(), hash))
+    }
+
+    /// Builds the [`QueryPlan`] for this request. Falls back to round-robin
+    /// when affinity doesn't apply for any reason
+    fn get_query_plan(&self, input: &Input) -> QueryPlan {
+        self.try_affinity_plan(input)
+            .unwrap_or_else(|| QueryPlan::new_basic(self.live_nodes.clone()))
+    }
+}
+
+impl Intercept for AffinityQueryPlanInterceptor {
+    fn name(&self) -> &'static str {
+        "AffinityQueryPlanInterceptor"
+    }
+
+    fn modify_before_serialization(
+        &self,
+        context: &mut BeforeSerializationInterceptorContextMut<'_>,
+        _runtime_components: &RuntimeComponents,
+        cfg: &mut ConfigBag,
+    ) -> Result<(), aws_smithy_runtime_api::box_error::BoxError> {
+        let input = context.input();
+        let query_plan = self.get_query_plan(input);
+
+        cfg.interceptor_state().store_put(query_plan);
+        Ok(())
     }
 }

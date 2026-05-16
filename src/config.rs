@@ -12,6 +12,13 @@ use crate::*;
 pub(crate) struct AlternatorExtensions {
     pub(crate) request_compression: Option<RequestCompression>,
     pub(crate) enforce_header_whitelist: Option<bool>,
+    pub(crate) active_interval: Option<u64>,
+    pub(crate) idle_interval: Option<u64>,
+    pub(crate) routing_scope: Option<RoutingScope>,
+    pub(crate) scheme: Option<String>,
+    pub(crate) port: Option<u16>,
+    pub(crate) seed_hosts: Option<Vec<String>>,
+    pub(crate) key_route_affinity: Option<keyrouting::affinity_config::KeyRouteAffinityConfig>,
 }
 
 /// [AlternatorClient]'s config
@@ -73,6 +80,82 @@ impl AlternatorConfig {
     pub fn request_compression(&self) -> Option<RequestCompression> {
         self.alternator_ext.request_compression.clone()
     }
+
+    /// Gets the active interval (in milliseconds) for refreshing the list of known nodes
+    /// when the client is active.
+    ///
+    /// While the client is sending requests to the cluster, the node list is refreshed at
+    /// this interval to quickly detect topology changes.
+    ///
+    /// The client is considered active when it has sent a request within the last
+    /// `idle_interval` milliseconds.
+    ///
+    /// The default value is 1000 ms (1 second).
+    pub fn active_interval(&self) -> Option<u64> {
+        self.alternator_ext.active_interval
+    }
+
+    /// Gets the idle interval (in milliseconds) for refreshing the list of known nodes
+    /// when the client is idle.
+    ///
+    /// While no requests are being made to the cluster, the node list is refreshed at this
+    /// longer interval to reduce unnecessary network traffic while still keeping the list
+    /// reasonably up-to-date.
+    ///
+    /// The client is considered idle when it hasn't sent a request within the last
+    /// `idle_interval` milliseconds.
+    ///
+    /// The default value is 60000 ms (1 minute).
+    pub fn idle_interval(&self) -> Option<u64> {
+        self.alternator_ext.idle_interval
+    }
+
+    /// Get the client's routing scope.
+    ///
+    /// This is used by the client to route requests to a chosen subset of nodes in the cluster,
+    /// based on the routing scope parameters set - datacenter and rack, see [RoutingScope].
+    ///
+    /// A routing scope can have a fallback scope set by [RoutingScope::with_fallback], which is used if no nodes are available in the preferred scope.
+    /// This function can be used multiple times to create a chain of fallback scopes.
+    /// Requests will always be routed to the most preferred scope in the chain with available nodes.
+    ///
+    /// If this is not provided, the client will use the cluster scope, meaning load balancing will happen across nodes in the datacenter of the seed host.
+    /// If multiple seed hosts are provided, it will use the datacenter of one of the seed hosts, falling back to a different one if needed.
+    ///
+    /// Keep in mind that subsequent fallback scope should ideally be broader than or equal to the
+    /// previous one, e.g., (rack -> datacenter -> cluster) or (rack -> another rack -> datacenter -> cluster).
+    /// Making a fallback narrower, e.g., (datacenter -> rack) or (cluster -> datacenter),
+    /// may be redundant if the set of nodes in the next scope is a subset of the previous one.
+    pub fn routing_scope(&self) -> Option<RoutingScope> {
+        self.alternator_ext.routing_scope.clone()
+    }
+
+    /// Gets the URI scheme (http or https).
+    pub fn scheme(&self) -> Option<String> {
+        self.alternator_ext.scheme.clone()
+    }
+
+    /// Port number for alternator connections.
+    pub fn port(&self) -> Option<u16> {
+        self.alternator_ext.port
+    }
+
+    /// Get the list of seed hosts for cluster discovery.
+    ///
+    /// The seed hosts are the initial endpoints (IP addresses or hostnames) used to discover the full cluster topology.
+    /// Use with [`AlternatorBuilder::scheme`] and [`AlternatorBuilder::port`] to construct the endpoint URIs.
+    pub fn seed_hosts(&self) -> Option<Vec<String>> {
+        self.alternator_ext.seed_hosts.clone()
+    }
+
+    /// Gets the key route affinity configuration.
+    ///
+    /// For more information see [keyrouting::affinity_config::KeyRouteAffinityConfig] and [keyrouting::affinity_config::KeyRouteAffinityType].
+    pub fn key_route_affinity(
+        &self,
+    ) -> Option<keyrouting::affinity_config::KeyRouteAffinityConfig> {
+        self.alternator_ext.key_route_affinity.clone()
+    }
 }
 
 /// Builder for [AlternatorConfig]
@@ -88,7 +171,6 @@ impl AlternatorConfig {
 ///     .build();
 ///
 /// let client = AlternatorClient::from_conf(config);
-/// ```
 #[derive(Clone, Debug, Default)]
 pub struct AlternatorBuilder {
     pub(crate) dynamodb_builder: aws_sdk_dynamodb::config::Builder,
@@ -160,6 +242,193 @@ impl AlternatorBuilder {
         request_compression: RequestCompression,
     ) -> &mut Self {
         self.alternator_ext.request_compression = Some(request_compression);
+        self
+    }
+
+    /// Sets the active interval (in milliseconds) for refreshing the list of known nodes
+    /// when the client is active.
+    ///
+    /// While the client is sending requests to the cluster, the node list is refreshed at
+    /// this interval to quickly detect topology changes.
+    ///
+    /// The client is considered active when it has sent a request within the last
+    /// `idle_interval` milliseconds.
+    ///
+    /// The default value is 1000 ms (1 second).
+    pub fn active_interval(mut self, active_interval: u64) -> Self {
+        self.set_active_interval(active_interval);
+        self
+    }
+
+    /// Sets the active interval (in milliseconds) for refreshing the list of known nodes
+    /// when the client is active.
+    ///
+    /// While the client is sending requests to the cluster, the node list is refreshed at
+    /// this interval to quickly detect topology changes.
+    ///
+    /// The client is considered active when it has sent a request within the last
+    /// `idle_interval` milliseconds.
+    ///
+    /// The default value is 1000 ms (1 second).
+    pub fn set_active_interval(&mut self, active_interval: u64) -> &mut Self {
+        self.alternator_ext.active_interval = Some(active_interval);
+        self
+    }
+
+    /// Sets the idle interval (in milliseconds) for refreshing the list of known nodes
+    /// when the client is idle.
+    ///
+    /// While no requests are being made to the cluster, the node list is refreshed at this
+    /// longer interval to reduce unnecessary network traffic while still keeping the list
+    /// reasonably up-to-date.
+    ///
+    /// The client is considered idle when it hasn't sent a request within the last
+    /// `idle_interval` milliseconds.
+    ///
+    /// The default value is 60000 ms (1 minute).
+    pub fn idle_interval(mut self, idle_interval: u64) -> Self {
+        self.set_idle_interval(idle_interval);
+        self
+    }
+
+    /// Sets the idle interval (in milliseconds) for refreshing the list of known nodes
+    /// when the client is idle.
+    ///
+    /// While no requests are being made to the cluster, the node list is refreshed at this
+    /// longer interval to reduce unnecessary network traffic while still keeping the list
+    /// reasonably up-to-date.
+    ///
+    /// The client is considered idle when it hasn't sent a request within the last
+    /// `idle_interval` milliseconds.
+    ///
+    /// The default value is 60000 ms (1 minute).
+    pub fn set_idle_interval(&mut self, idle_interval: u64) -> &mut Self {
+        self.alternator_ext.idle_interval = Some(idle_interval);
+        self
+    }
+
+    /// Set the routing scope for the client.
+    ///
+    /// This is used by the client to route requests to a chosen subset of nodes in the cluster,
+    /// based on the routing scope parameters set - datacenter and rack, see [RoutingScope].
+    ///
+    /// A routing scope can have a fallback scope set by [RoutingScope::with_fallback], which is used if no nodes are available in the preferred scope.
+    /// This function can be used multiple times to create a chain of fallback scopes.
+    /// Requests will always be routed to the most preferred scope in the chain with available nodes.
+    ///
+    /// If this is not provided, the client will use the cluster scope, meaning load balancing will happen across nodes in the datacenter of the seed host.
+    /// If multiple seed hosts are provided, it will use the datacenter of one of the seed hosts, falling back to a different one if needed.
+    ///
+    /// Keep in mind that subsequent fallback scope should ideally be broader than or equal to the
+    /// previous one, e.g., (rack -> datacenter -> cluster) or (rack -> another rack -> datacenter -> cluster).
+    /// Making a fallback narrower, e.g., (datacenter -> rack) or (cluster -> datacenter),
+    /// may be redundant if the set of nodes in the next scope is a subset of the previous one.
+    pub fn routing_scope(mut self, routing_scope: RoutingScope) -> Self {
+        self.set_routing_scope(routing_scope);
+        self
+    }
+
+    /// Set the routing scope for the client.
+    ///
+    /// This is used by the client to route requests to a chosen subset of nodes in the cluster,
+    /// based on the routing scope parameters set - datacenter and rack, see [RoutingScope].
+    ///
+    /// A routing scope can have a fallback scope set by [RoutingScope::with_fallback], which is used if no nodes are available in the preferred scope.
+    /// This function can be used multiple times to create a chain of fallback scopes.
+    /// Requests will always be routed to the most preferred scope in the chain with available nodes.
+    ///
+    /// If this is not provided, the client will use the cluster scope, meaning load balancing will happen across nodes in the datacenter of the seed host.
+    /// If multiple seed hosts are provided, it will use the datacenter of one of the seed hosts, falling back to a different one if needed.
+    ///
+    /// Keep in mind that subsequent fallback scope should ideally be broader than or equal to the
+    /// previous one, e.g., (rack -> datacenter -> cluster) or (rack -> another rack -> datacenter -> cluster).
+    /// Making a fallback narrower, e.g., (datacenter -> rack) or (cluster -> datacenter),
+    /// may be redundant if the set of nodes in the next scope is a subset of the previous one.
+    pub fn set_routing_scope(&mut self, routing_scope: RoutingScope) -> &mut Self {
+        self.alternator_ext.routing_scope = Some(routing_scope);
+        self
+    }
+
+    /// Sets the URI scheme (http or https).
+    ///
+    /// Accepts for example "http", "http:", "http://" — stores just "http", same with "https".
+    pub fn scheme(mut self, scheme: impl Into<String>) -> Self {
+        self.set_scheme(scheme);
+        self
+    }
+
+    /// Sets the URI scheme (http or https).
+    ///
+    /// Accepts for example "http", "http:", "http://" — stores just "http", same with "https".
+    pub fn set_scheme(&mut self, scheme: impl Into<String>) -> &mut Self {
+        let s = scheme.into();
+
+        let normalized = s.trim_end_matches('/').trim_end_matches(':').to_string();
+        self.alternator_ext.scheme = Some(normalized);
+        self
+    }
+
+    /// Port number for alternator connections
+    pub fn port(mut self, port: u16) -> Self {
+        self.set_port(port);
+        self
+    }
+
+    /// Port number for alternator connections
+    pub fn set_port(&mut self, port: u16) -> &mut Self {
+        self.alternator_ext.port = Some(port);
+        self
+    }
+
+    /// Set the list of seed hosts for cluster discovery.
+    ///
+    /// The seed hosts are the initial endpoints (IP addresses or hostnames) used to discover the full cluster topology.
+    /// Use with [`AlternatorBuilder::scheme`] and [`AlternatorBuilder::port`] to construct the endpoint URIs.
+    pub fn seed_hosts<I, S>(mut self, seed_hosts: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.set_seed_hosts(seed_hosts.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Set the list of seed hosts for cluster discovery.
+    ///
+    /// The seed hosts are the initial endpoints (IP addresses or hostnames) used to discover the full cluster topology.
+    /// Use with [`AlternatorBuilder::scheme`] and [`AlternatorBuilder::port`] to construct the endpoint URIs.
+    pub fn set_seed_hosts(&mut self, seed_hosts: Vec<String>) -> &mut Self {
+        self.alternator_ext.seed_hosts = Some(seed_hosts);
+        self
+    }
+
+    /// Sets the key route affinity configuration.
+    ///
+    /// Use it either with a pre-constructed [keyrouting::affinity_config::KeyRouteAffinityConfig]
+    /// or with a [keyrouting::affinity_config::KeyRouteAffinity] for simpler use cases.
+    /// Calling with [keyrouting::affinity_config::KeyRouteAffinityType::None], is equivalent to not setting the affinity at all.
+    ///
+    /// For more information see [keyrouting::affinity_config::KeyRouteAffinityConfig] and [keyrouting::affinity_config::KeyRouteAffinityType].
+    pub fn key_route_affinity(
+        mut self,
+        key_route_affinity: impl Into<keyrouting::affinity_config::KeyRouteAffinityConfig>,
+    ) -> Self {
+        self.set_key_route_affinity(key_route_affinity.into());
+        self
+    }
+
+    /// Sets the key route affinity configuration.
+    ///
+    /// Use it either with a pre-constructed [keyrouting::affinity_config::KeyRouteAffinityConfig]
+    /// or with a [keyrouting::affinity_config::KeyRouteAffinity] for simpler use cases.
+    /// Calling with [keyrouting::affinity_config::KeyRouteAffinityType::None], is equivalent to not setting the affinity at all.
+    ///
+    /// For more information see [keyrouting::affinity_config::KeyRouteAffinityConfig] and [keyrouting::affinity_config::KeyRouteAffinityType].
+    pub fn set_key_route_affinity(
+        &mut self,
+        key_route_affinity: impl Into<keyrouting::affinity_config::KeyRouteAffinityConfig>,
+    ) -> &mut Self {
+        self.alternator_ext.key_route_affinity = Some(key_route_affinity.into());
         self
     }
 }
@@ -570,11 +839,26 @@ impl AlternatorBuilder {
     }
 
     pub fn endpoint_url(mut self, endpoint_url: impl Into<String>) -> Self {
-        self.dynamodb_builder = self.dynamodb_builder.endpoint_url(endpoint_url);
+        self.set_endpoint_url(Some(endpoint_url.into()));
         self
     }
 
     pub fn set_endpoint_url(&mut self, endpoint_url: Option<String>) -> &mut Self {
+        // Reset everything upfront to avoid stale fields.
+        self.alternator_ext.seed_hosts = None;
+        self.alternator_ext.scheme = None;
+        self.alternator_ext.port = None;
+
+        if let Some(url_str) = endpoint_url.as_deref()
+            && let Ok(url) = url::Url::parse(url_str)
+            && let Some(host) = url.host_str()
+        {
+            self.set_seed_hosts(vec![host.to_string()]);
+            self.set_scheme(url.scheme());
+            if let Some(port) = url.port() {
+                self.set_port(port);
+            }
+        }
         self.dynamodb_builder.set_endpoint_url(endpoint_url);
         self
     }
@@ -703,5 +987,56 @@ mod test {
                 .expect("does not have length")
                 == 0
         );
+    }
+
+    #[test]
+    fn from_conf_does_not_panic_without_runtime() {
+        let config = AlternatorConfig::builder()
+            .behavior_version_latest()
+            .build();
+        let _ = AlternatorClient::from_conf(config);
+    }
+
+    #[test]
+    fn endpoint_url_sets_and_clears_correctly() {
+        let config = AlternatorConfig::builder()
+            .endpoint_url("http://127.0.0.1:8000")
+            .behavior_version_latest()
+            .build();
+        assert_eq!(config.seed_hosts(), Some(vec!["127.0.0.1".to_string()]));
+        assert_eq!(config.scheme(), Some("http".to_string()));
+        assert_eq!(config.port(), Some(8000));
+
+        let mut new_builder = config.to_builder();
+        new_builder.set_endpoint_url(None);
+        let new_config = new_builder.build();
+
+        assert_eq!(new_config.seed_hosts(), None);
+        assert_eq!(new_config.scheme(), None);
+        assert_eq!(new_config.port(), None);
+    }
+
+    #[test]
+    fn setting_scheme_test() {
+        let config = AlternatorConfig::builder()
+            .scheme("https://")
+            .behavior_version_latest()
+            .build();
+
+        assert_eq!(config.scheme(), Some("https".to_string()));
+
+        let config = AlternatorConfig::builder()
+            .scheme("http:")
+            .behavior_version_latest()
+            .build();
+
+        assert_eq!(config.scheme(), Some("http".to_string()));
+
+        let config = AlternatorConfig::builder()
+            .scheme("http")
+            .behavior_version_latest()
+            .build();
+
+        assert_eq!(config.scheme(), Some("http".to_string()));
     }
 }
